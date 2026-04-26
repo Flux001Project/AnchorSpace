@@ -30,10 +30,22 @@ export function installTestInjector(
   onLogReseed?: () => void
 ) {
   currentParser = parser;
-  if (installed) return;
   const mock = new URLSearchParams(window.location.search).get("mock");
   // Accept any truthy value of `mock` (typically `1` or `isolated`).
   if (mock === null) return;
+
+  // Always seed the freshly-installed parser with `proxy:reconnected` so the
+  // LED is green in mock mode. Without this, React StrictMode's double-invoke
+  // (or any re-mount) leaves the new parser stuck at `connected: false` —
+  // the previous-parser proxy state in the store gets clobbered as soon as
+  // the new parser emits anything else.
+  parser.ingest({
+    type: "event",
+    event: "proxy:reconnected",
+    payload: { ts: Date.now() } as unknown as Record<string, unknown>,
+  });
+
+  if (installed) return;
   installed = true;
 
   (window as unknown as { __anchorspaceStore: typeof useRoomStore }).__anchorspaceStore = useRoomStore;
@@ -113,13 +125,8 @@ export function installTestInjector(
     );
   }
 
-  // Mark proxy as connected so the LED is green in screenshots.
-  ingest(
-    synth({
-      event: "proxy:reconnected",
-      payload: { ts: Date.now() } as unknown as Record<string, unknown>,
-    })
-  );
+  // Note: `proxy:reconnected` is now seeded above, before the install-once
+  // guard, so a fresh parser is always marked connected even on remount.
 
   type Kind =
     | "typing"

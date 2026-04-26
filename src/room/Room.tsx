@@ -406,8 +406,11 @@ function drawAwarenessLabel(
 ) {
   const cx = ch.pos.x;
   const top = ch.topY();
-  // Stack labels well above the speech bubble (~36px clearance).
-  const baseY = top - 38;
+  // Labels stack downward from baseY: name at baseY, task at +14, timer at +28.
+  // When a speech bubble is present it occupies ~34px above topY() (22px body +
+  // 6px head gap + 6px tail), so the entire 3-line label band must clear that.
+  // Without a bubble the original 38px clearance is plenty.
+  const baseY = top - (ch.bubble ? 66 : 38);
 
   const live = run && run.endedAt === undefined;
   const taskLine = live ? taskLineFor(run) : undefined;
@@ -417,9 +420,9 @@ function drawAwarenessLabel(
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
 
-  // Name.
+  // Name (rendered in agent identity color so sub-agents read as themselves).
   ctx.font = "bold 12px ui-monospace, SFMono-Regular, monospace";
-  ctx.fillStyle = "rgba(232, 213, 183, 0.92)";
+  ctx.fillStyle = ch.color;
   ctx.fillText(ch.label, cx, baseY);
 
   if (live && taskLine) {

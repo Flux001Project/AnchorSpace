@@ -424,7 +424,7 @@ function drawRoundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number
 
 function drawLed(ctx: CanvasRenderingContext2D, color: string, tMs: number) {
   // Pulse only when amber (disconnected); steady when green.
-  const pulse = color === palette.monitorGlow ? 1 : 0.6 + 0.4 * Math.sin(tMs * 0.005);
+  const pulse = color === palette.monitorGlow ? 0.6 + 0.4 * Math.sin(tMs * 0.005) : 1;
   ctx.save();
   // Glow.
   ctx.globalCompositeOperation = "lighter";
