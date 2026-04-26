@@ -47,8 +47,12 @@ export interface DayBookStore {
   version: number;
 }
 
-/** Schema version. Bump when PersistedRun shape changes. */
-export const DAYBOOK_VERSION = 1 as const;
+/**
+ * Schema version. Bump when PersistedRun shape changes OR when a
+ * one-time migration sweep needs to run on next load (Phase 4.0.1
+ * uses this to evict phantom runs persisted under the v1 substrate).
+ */
+export const DAYBOOK_VERSION = 2 as const;
 
 /** Rolling-window cap. Oldest entries evict beyond this. */
 export const MAX_RUNS = 5000 as const;
@@ -59,7 +63,16 @@ export const RECENT_EVENTS_PER_RUN = 20 as const;
 /** localStorage key. */
 export const DAYBOOK_STORAGE_KEY = "anchorspace.dayBook.v1" as const;
 
-/** Read store from localStorage. Returns empty store on miss/parse error. */
+/**
+ * Read store from localStorage. Returns empty store on miss/parse error.
+ *
+ * Runs migrations on load. Currently:
+ *   - v1 → v2: phantom-run sweep. The parser pre-4.0.1 would mint runs on
+ *     any agent envelope, including post-hoc emissions (announce dispatch,
+ *     late assistant flushes, command output replays) that aren't real
+ *     run starts. Those manifest as zero-tool, zero-event, non-ended
+ *     records in the store. Drop them on first load under v2.
+ */
 export function loadDayBook(): DayBookStore {
   if (typeof window === "undefined") {
     return { runs: [], version: DAYBOOK_VERSION };
@@ -76,13 +89,42 @@ export function loadDayBook(): DayBookStore {
       return { runs: [], version: DAYBOOK_VERSION };
     }
     const obj = parsed as { runs: unknown[]; version?: unknown };
-    return {
-      runs: obj.runs.filter(isPersistedRun),
-      version: typeof obj.version === "number" ? obj.version : DAYBOOK_VERSION,
-    };
+    const storedVersion = typeof obj.version === "number" ? obj.version : 1;
+    let runs = obj.runs.filter(isPersistedRun);
+
+    // v1 → v2 sweep: drop phantom runs.
+    if (storedVersion < 2) {
+      runs = runs.filter((r) => !isPhantomRun(r));
+      // Persist the swept store immediately so the migration is one-shot.
+      const swept: DayBookStore = { runs, version: DAYBOOK_VERSION };
+      try {
+        window.localStorage.setItem(DAYBOOK_STORAGE_KEY, JSON.stringify(swept));
+      } catch {
+        // best-effort; migration will retry on next load if storage write fails
+      }
+    }
+
+    return { runs, version: DAYBOOK_VERSION };
   } catch {
     return { runs: [], version: DAYBOOK_VERSION };
   }
+}
+
+/**
+ * A phantom run is a record persisted by the pre-4.0.1 parser on first
+ * sight of a non-qualifying agent envelope. The shape: zero tool calls,
+ * zero events ever recorded, and never ended (parser never saw a
+ * lifecycle.end either). A legitimate real run will always have at least
+ * one of these signals.
+ *
+ * Exposed for the sweep test; not part of the public API surface.
+ */
+export function isPhantomRun(r: PersistedRun): boolean {
+  return (
+    r.toolCallCount === 0 &&
+    r.recentEvents.length === 0 &&
+    r.endedAt === null
+  );
 }
 
 /** Persist store to localStorage. Silently no-ops when window is undefined. */

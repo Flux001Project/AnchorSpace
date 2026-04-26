@@ -7,9 +7,11 @@ import {
   runsForDay,
   localMidnight,
   clearDayBook,
+  isPhantomRun,
   MAX_RUNS,
   RECENT_EVENTS_PER_RUN,
   DAYBOOK_VERSION,
+  DAYBOOK_STORAGE_KEY,
   type DayBookStore,
   type PersistedRun,
 } from "../dayBook";
@@ -51,9 +53,18 @@ describe("dayBook", () => {
     expect(s.version).toBe(DAYBOOK_VERSION);
   });
 
-  it("round-trips save → load", () => {
-    const r: PersistedRun = { ...baseRun, key: "r1::s1", runId: "r1", sessionKey: "s1", startedAt: 1000 };
-    saveDayBook({ runs: [r], version: 1 });
+  it("round-trips save → load (current schema, no migration)", () => {
+    // Use a non-phantom run (toolCallCount > 0) so the v1→v2 sweep
+    // doesn't fire even if the test ever runs against a v1 store.
+    const r: PersistedRun = {
+      ...baseRun,
+      key: "r1::s1",
+      runId: "r1",
+      sessionKey: "s1",
+      startedAt: 1000,
+      toolCallCount: 3,
+    };
+    saveDayBook({ runs: [r], version: DAYBOOK_VERSION });
     const reloaded = loadDayBook();
     expect(reloaded.runs.length).toBe(1);
     expect(reloaded.runs[0].key).toBe("r1::s1");
@@ -104,6 +115,64 @@ describe("dayBook", () => {
     const midnight = localMidnight(d.getTime());
     const expected = new Date(2026, 3, 26, 0, 0, 0, 0).getTime();
     expect(midnight).toBe(expected);
+  });
+
+  it("v1→v2 migration sweeps phantom runs from a pre-4.0.1 store", () => {
+    // A pre-4.0.1 store with two records:
+    //   - real Flux run (7 tool calls, has events) — should survive
+    //   - phantom Sub-1 (0 tool calls, no events, never ended) — should be evicted
+    const real: PersistedRun = {
+      ...baseRun,
+      key: "flux-run::agent:main:main",
+      runId: "flux-run",
+      sessionKey: "agent:main:main",
+      agentId: "Flux",
+      startedAt: 1000,
+      toolCallCount: 7,
+      recentEvents: [
+        { t: 1100, type: "exec", summary: "npm test" },
+        { t: 1200, type: "read", summary: "src/foo.ts" },
+      ],
+    };
+    const phantom: PersistedRun = {
+      ...baseRun,
+      key: "announce:v1:abc::agent:main:subagent:xyz",
+      runId: "announce:v1:abc",
+      sessionKey: "agent:main:subagent:xyz",
+      agentId: "Sub-1",
+      startedAt: 2000,
+      // toolCallCount=0, recentEvents=[], endedAt=null — phantom shape
+    };
+
+    // Manually persist a v1 store to localStorage (saveDayBook would write
+    // current version, defeating the test).
+    (globalThis as unknown as { window: { localStorage: Storage } }).window.localStorage.setItem(
+      DAYBOOK_STORAGE_KEY,
+      JSON.stringify({ runs: [real, phantom], version: 1 })
+    );
+
+    const loaded = loadDayBook();
+    expect(loaded.runs.length).toBe(1);
+    expect(loaded.runs[0].key).toBe("flux-run::agent:main:main");
+    expect(loaded.version).toBe(DAYBOOK_VERSION);
+
+    // Migration is one-shot: a second load reads back the swept store.
+    const reloaded = loadDayBook();
+    expect(reloaded.runs.length).toBe(1);
+    expect(reloaded.version).toBe(DAYBOOK_VERSION);
+  });
+
+  it("isPhantomRun classifies the documented shapes correctly", () => {
+    // Phantom: zero tools, zero events, not ended.
+    expect(isPhantomRun({ ...baseRun, toolCallCount: 0, recentEvents: [], endedAt: null })).toBe(true);
+    // Real — has tool calls.
+    expect(isPhantomRun({ ...baseRun, toolCallCount: 1, recentEvents: [], endedAt: null })).toBe(false);
+    // Real — has events.
+    expect(
+      isPhantomRun({ ...baseRun, toolCallCount: 0, recentEvents: [{ t: 0, type: "x", summary: "y" }], endedAt: null })
+    ).toBe(false);
+    // Real — ended cleanly (parser saw a lifecycle.end).
+    expect(isPhantomRun({ ...baseRun, toolCallCount: 0, recentEvents: [], endedAt: 1000 })).toBe(false);
   });
 
   it("runsForDay filters to [dayStart, dayStart + 24h)", () => {

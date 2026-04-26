@@ -196,7 +196,27 @@ export class AgentStateParser {
     const key = compositeKey(runId, sessionKey);
     const now = Date.now();
     let run = this.runs.get(key);
+
+    // Phase 4.0.1 — substrate honesty rule. The parser MUST NOT mint a run
+    // on first sight of an arbitrary agent envelope. The wire format carries
+    // post-hoc emissions (announce dispatch, late assistant flushes, command
+    // output replays) that are not "runs starting" in the user's mental
+    // model. Surfacing those as runs paints a character at a desk that
+    // isn't actually working — a Principle 1 violation. Require evidence:
+    //   (a) lifecycle.start, OR
+    //   (b) item.start with kind="tool"
+    // Any other first-sighting is dropped silently. A real run that later
+    // emits a qualifying envelope will be created cleanly at that point.
     if (!run) {
+      const isLifecycleStart =
+        payload.stream === "lifecycle" &&
+        (payload as { phase?: string }).phase === "start";
+      const isToolItemStart =
+        payload.stream === "item" &&
+        (payload as { data?: { phase?: string; kind?: string } }).data?.phase === "start" &&
+        (payload as { data?: { phase?: string; kind?: string } }).data?.kind === "tool";
+      if (!isLifecycleStart && !isToolItemStart) return false;
+
       run = {
         key,
         runId,
