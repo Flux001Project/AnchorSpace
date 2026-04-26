@@ -34,6 +34,19 @@ export type CharacterState =
   | "waiting"
   | "walking";
 
+/**
+ * Idle micro-behaviors (T-16). Picked at random by the controller every
+ * 30–60s when the character is in `state: "idle"`.
+ */
+export type IdleBehavior =
+  | "none"
+  | "look-window"   // head turns right toward window
+  | "look-shelf"    // head turns left toward bookshelf
+  | "stretch"       // body briefly elongates 4px
+  | "sip-mug"       // head dips toward mug for 2s
+  | "lean-back"     // body shifts down-back 3px
+  | "look-flux";    // sub-agent only — head turns toward Flux
+
 export interface CharacterInit {
   id: string;            // composite runId+sessionKey, or "flux"
   label: string;         // display name above head
@@ -49,6 +62,8 @@ export interface CharacterTickInput {
   /** True if the run has ended and this character should walk off-stage and despawn. */
   despawning?: boolean;
   offstagePos?: { x: number; y: number };
+  /** Idle micro-behavior (only honored when desiredState === "idle"). */
+  idleBehavior?: IdleBehavior;
 }
 
 export class Character {
@@ -65,12 +80,15 @@ export class Character {
   state: CharacterState = "walking";
   bubble?: string;
   despawning = false;
+  idleBehavior: IdleBehavior = "none";
   /** Set once the off-stage walk completes; renderer drops the char next tick. */
   done = false;
 
   // Animation timers.
   private spawnedAt = performance.now();
   private stateChangedAt = performance.now();
+  private idleBehaviorChangedAt = performance.now();
+  private prevIdleBehavior: IdleBehavior = "none";
 
   constructor(init: CharacterInit) {
     this.id = init.id;
@@ -110,6 +128,14 @@ export class Character {
       this.setState(input.desiredState);
     }
 
+    // Idle behavior tracking — only valid when state is "idle".
+    const next = input.desiredState === "idle" ? (input.idleBehavior ?? "none") : "none";
+    if (next !== this.prevIdleBehavior) {
+      this.prevIdleBehavior = next;
+      this.idleBehavior = next;
+      this.idleBehaviorChangedAt = performance.now();
+    }
+
     this.bubble = input.bubbleText;
   }
 
@@ -129,13 +155,25 @@ export class Character {
     let xOffset = 0;
     let yOffset = 0;
     let headTilt = 0;
+    let headOffsetX = 0;
+    let headOffsetY = 0;
+    let bodyStretch = 0;
     let stepBob = 0;
 
     switch (this.state) {
-      case "idle":
+      case "idle": {
         // Slow sine bob, 2px amplitude.
         yOffset = Math.sin(tMs * 0.0025) * 2;
+        // Layer the idle micro-behavior on top.
+        const idle = applyIdleBehavior(this.idleBehavior, tMs - this.idleBehaviorChangedAt);
+        headOffsetX = idle.headOffsetX;
+        headOffsetY = idle.headOffsetY;
+        bodyStretch = idle.bodyStretch;
+        headTilt += idle.headTilt;
+        xOffset += idle.xOffset;
+        yOffset += idle.yOffset;
         break;
+      }
       case "typing":
         // Rapid horizontal micro-shake, 3px, fast.
         xOffset = Math.sin(tMs * 0.04) * 3;
@@ -158,9 +196,11 @@ export class Character {
 
     const cx = this.pos.x + xOffset;
     const baseY = this.pos.y + yOffset - stepBob;
+    const bodyHExtra = bodyStretch;
 
-    // Body (rounded rect): 36 × 54
-    const bw = 36, bh = 54;
+    // Body (rounded rect): 36 × 54 (+ stretch in idle).
+    const bw = 36;
+    const bh = 54 + bodyHExtra;
     drawRoundedRect(ctx, cx - bw / 2, baseY - bh, bw, bh, 10, this.color);
 
     // Subtle dark inner shading.
@@ -168,10 +208,10 @@ export class Character {
     drawRoundedRectPath(ctx, cx - bw / 2 + 2, baseY - bh + 2, bw - 4, bh - 8, 8);
     ctx.fill();
 
-    // Head — circle.
+    // Head — circle. Idle micro-behaviors can shift the head.
     const headR = 17;
-    const headCx = cx + Math.sin(headTilt) * 6;
-    const headCy = baseY - bh - headR + 6;
+    const headCx = cx + Math.sin(headTilt) * 6 + headOffsetX;
+    const headCy = baseY - bh - headR + 6 + headOffsetY;
     ctx.fillStyle = this.color;
     ctx.beginPath();
     ctx.arc(headCx, headCy, headR, 0, Math.PI * 2);
@@ -191,16 +231,75 @@ export class Character {
       ctx.fill();
     }
 
-    // Label under feet.
-    ctx.font = "11px ui-monospace, SFMono-Regular, monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    ctx.fillStyle = "rgba(232, 213, 183, 0.7)";
-    ctx.fillText(this.label, cx, baseY + 4);
-
     // Speech bubble.
     if (this.bubble) {
       drawBubble(ctx, cx, headCy - headR - 6, this.bubble);
+    }
+  }
+
+  /** Top-of-head Y in world coords — used by the label/timer overlay. */
+  topY(): number {
+    const bh = 54;
+    const headR = 17;
+    return this.pos.y - bh - headR * 2 + 6;
+  }
+}
+
+// ── Idle behavior animation ─────────────────────────────────────────────────
+
+interface IdleApplied {
+  headOffsetX: number;
+  headOffsetY: number;
+  bodyStretch: number;
+  headTilt: number;
+  xOffset: number;
+  yOffset: number;
+}
+
+function applyIdleBehavior(b: IdleBehavior, tMs: number): IdleApplied {
+  const z: IdleApplied = { headOffsetX: 0, headOffsetY: 0, bodyStretch: 0, headTilt: 0, xOffset: 0, yOffset: 0 };
+  // Brief: behaviors should last ~2–4s. We ease in/out so they don't snap.
+  // tMs is ms since this idle behavior was assigned.
+  switch (b) {
+    case "none":
+      return z;
+    case "look-window": {
+      // Head turns right for 4s, eased.
+      const dur = 4000;
+      const t = Math.min(1, tMs / dur);
+      const ease = Math.sin(Math.PI * t); // 0 → 1 → 0
+      return { ...z, headOffsetX: 7 * ease, headTilt: 0.1 * ease };
+    }
+    case "look-shelf": {
+      const dur = 4000;
+      const t = Math.min(1, tMs / dur);
+      const ease = Math.sin(Math.PI * t);
+      return { ...z, headOffsetX: -7 * ease, headTilt: -0.1 * ease };
+    }
+    case "stretch": {
+      const dur = 1600;
+      const t = Math.min(1, tMs / dur);
+      const ease = Math.sin(Math.PI * t);
+      return { ...z, bodyStretch: 4 * ease };
+    }
+    case "sip-mug": {
+      const dur = 2000;
+      const t = Math.min(1, tMs / dur);
+      const ease = Math.sin(Math.PI * t);
+      return { ...z, headOffsetX: -8 * ease, headOffsetY: 6 * ease };
+    }
+    case "lean-back": {
+      const dur = 3000;
+      const t = Math.min(1, tMs / dur);
+      const ease = Math.sin(Math.PI * t);
+      return { ...z, xOffset: -3 * ease, yOffset: 3 * ease };
+    }
+    case "look-flux": {
+      // For sub-agents on the right side: head turns LEFT.
+      const dur = 3000;
+      const t = Math.min(1, tMs / dur);
+      const ease = Math.sin(Math.PI * t);
+      return { ...z, headOffsetX: -8 * ease, headTilt: -0.12 * ease };
     }
   }
 }

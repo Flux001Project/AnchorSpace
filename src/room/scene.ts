@@ -56,6 +56,16 @@ export const OFFSTAGE_RIGHT = { x: STAGE_W + 80, y: 600 };
 // LED indicator (top-right).
 export const LED = { x: STAGE_W - 36, y: 28, r: 7 };
 
+// Notebook on Flux's desk (T-15). Closed leather journal, gold accent.
+// Position: front-right of the anchor desk so the player can see it without
+// it being hidden by Flux's body.
+export const NOTEBOOK = {
+  x: ANCHOR_DESK.x + ANCHOR_DESK.w - 70,
+  y: ANCHOR_DESK.y + 18,
+  w: 44,
+  h: 60,
+};
+
 // Window.
 const WINDOW = { x: 1010, y: 110, w: 220, h: 180 };
 
@@ -119,12 +129,21 @@ const BOOK_STRIPS: Array<{ shelfY: number; books: Array<{ w: number; color: stri
 
 // ── Drawing routines ─────────────────────────────────────────────────────────
 
+export interface SceneState {
+  occupied: { anchor: boolean; secondary: boolean[] };
+  ledColor: string;
+  tMs: number;
+  /** True when at least one run is live; controls monitor + lamp intensity. */
+  working: boolean;
+  /** Number of activity-log entries (0–50); drives notebook thickness. */
+  notebookEntryCount: number;
+}
+
 export function drawScene(
   ctx: CanvasRenderingContext2D,
-  occupied: { anchor: boolean; secondary: boolean[] },
-  ledColor: string,
-  tMs: number
+  state: SceneState
 ) {
+  const { occupied, ledColor, tMs, working, notebookEntryCount } = state;
   // Wall + floor.
   ctx.fillStyle = palette.wall;
   ctx.fillRect(0, 0, STAGE_W, STAGE_H * 0.6);
@@ -150,10 +169,11 @@ export function drawScene(
 
   drawWindow(ctx, tMs);
   drawBookshelf(ctx);
-  drawSecondaryDesks(ctx, occupied.secondary);
-  drawAnchorDesk(ctx);
-  drawLamp(ctx);
-  drawAmbient(ctx);
+  drawSecondaryDesks(ctx, occupied.secondary, working);
+  drawAnchorDesk(ctx, working);
+  drawNotebook(ctx, notebookEntryCount);
+  drawLamp(ctx, working);
+  drawAmbient(ctx, working);
   drawLed(ctx, ledColor, tMs);
 }
 
@@ -227,7 +247,7 @@ function drawBookshelf(ctx: CanvasRenderingContext2D) {
   }
 }
 
-function drawAnchorDesk(ctx: CanvasRenderingContext2D) {
+function drawAnchorDesk(ctx: CanvasRenderingContext2D, working: boolean) {
   // Desk.
   ctx.fillStyle = palette.desk;
   ctx.fillRect(ANCHOR_DESK.x, ANCHOR_DESK.y, ANCHOR_DESK.w, ANCHOR_DESK.h);
@@ -248,10 +268,15 @@ function drawAnchorDesk(ctx: CanvasRenderingContext2D) {
   // Bezel.
   ctx.fillStyle = "#0a0604";
   ctx.fillRect(mon.x - 6, mon.y - 6, mon.w + 12, mon.h + 12);
-  // Screen.
+  // Screen. Working = current dim amber gradient. Idle = ~30% brightness.
   const screen = ctx.createLinearGradient(mon.x, mon.y, mon.x, mon.y + mon.h);
-  screen.addColorStop(0, "#5a3a08");
-  screen.addColorStop(1, "#241300");
+  if (working) {
+    screen.addColorStop(0, "#5a3a08");
+    screen.addColorStop(1, "#241300");
+  } else {
+    screen.addColorStop(0, "#1d1304");
+    screen.addColorStop(1, "#0c0700");
+  }
   ctx.fillStyle = screen;
   ctx.fillRect(mon.x, mon.y, mon.w, mon.h);
   // Screen warm bloom (the spec said #F0A500 — full punch reads like fire on
@@ -271,7 +296,10 @@ function drawAnchorDesk(ctx: CanvasRenderingContext2D) {
   ctx.fill();
 }
 
-function drawSecondaryDesks(ctx: CanvasRenderingContext2D, occupied: boolean[]) {
+function drawSecondaryDesks(ctx: CanvasRenderingContext2D, occupied: boolean[], working: boolean) {
+  // `working` drives the anchor monitor; sub-agent monitors only glow when
+  // their slot is occupied (already handled below).
+  void working;
   for (let i = 0; i < SECONDARY_DESKS.length; i++) {
     const d = SECONDARY_DESKS[i];
     const isOccupied = occupied[i];
@@ -297,7 +325,11 @@ function drawSecondaryDesks(ctx: CanvasRenderingContext2D, occupied: boolean[]) 
   }
 }
 
-function drawLamp(ctx: CanvasRenderingContext2D) {
+function drawLamp(ctx: CanvasRenderingContext2D, working: boolean) {
+  // Cone radius shrinks ~20% when idle.
+  const radiusScale = working ? 1 : 0.8;
+  const innerR = 18 * radiusScale;
+  const outerR = 280 * radiusScale;
   // Small lamp base on left edge of anchor desk.
   const base = { x: ANCHOR_DESK.x + 26, y: ANCHOR_DESK.y - 4 };
   ctx.fillStyle = "#1a100a";
@@ -316,29 +348,78 @@ function drawLamp(ctx: CanvasRenderingContext2D) {
   ctx.fill();
 
   // Cone of warm light from the shade — radial gradient.
-  const grad = ctx.createRadialGradient(base.x, base.y - 30, 18, base.x, base.y - 30, 280);
-  grad.addColorStop(0, "rgba(255, 184, 119, 0.55)");
-  grad.addColorStop(0.4, "rgba(255, 107, 53, 0.18)");
+  const grad = ctx.createRadialGradient(base.x, base.y - 30, innerR, base.x, base.y - 30, outerR);
+  const coreAlpha = working ? 0.55 : 0.45;
+  const midAlpha = working ? 0.18 : 0.13;
+  grad.addColorStop(0, `rgba(255, 184, 119, ${coreAlpha})`);
+  grad.addColorStop(0.4, `rgba(255, 107, 53, ${midAlpha})`);
   grad.addColorStop(1, "rgba(255, 107, 53, 0)");
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
   ctx.fillStyle = grad;
-  ctx.fillRect(base.x - 280, base.y - 280, 560, 560);
+  ctx.fillRect(base.x - outerR, base.y - outerR, outerR * 2, outerR * 2);
   ctx.restore();
 }
 
-function drawAmbient(ctx: CanvasRenderingContext2D) {
+function drawAmbient(ctx: CanvasRenderingContext2D, working: boolean) {
   // Brief: ambient #FF6B35 at 15% opacity. Apply as a soft full-room wash
-  // biased toward the lamp side so the right wall stays moodier.
+  // biased toward the lamp side so the right wall stays moodier. Slightly
+  // dimmed when idle.
   ctx.save();
   ctx.globalCompositeOperation = "lighter";
   const wash = ctx.createRadialGradient(STAGE_W * 0.32, STAGE_H * 0.55, 80, STAGE_W * 0.32, STAGE_H * 0.55, 760);
-  wash.addColorStop(0, "rgba(255, 107, 53, 0.15)");
-  wash.addColorStop(0.6, "rgba(255, 107, 53, 0.08)");
+  const coreAlpha = working ? 0.15 : 0.11;
+  const midAlpha = working ? 0.08 : 0.06;
+  wash.addColorStop(0, `rgba(255, 107, 53, ${coreAlpha})`);
+  wash.addColorStop(0.6, `rgba(255, 107, 53, ${midAlpha})`);
   wash.addColorStop(1, "rgba(255, 107, 53, 0)");
   ctx.fillStyle = wash;
   ctx.fillRect(0, 0, STAGE_W, STAGE_H);
   ctx.restore();
+}
+
+/**
+ * Notebook on the desk. Thickness grows with entry count: 0–4 entries = 1
+ * level (the closed cover), 5–9 = 2 levels, ..., capped at 10 levels (50
+ * entries). Each "level" adds a 2px right-edge stripe so it reads as page
+ * count.
+ */
+function drawNotebook(ctx: CanvasRenderingContext2D, entryCount: number) {
+  const { x, y, w, h } = NOTEBOOK;
+  const thickness = Math.min(10, Math.floor(entryCount / 5) + 1);
+  // Page stripes (right side, beneath the cover).
+  ctx.fillStyle = "#d8c79a";
+  for (let i = 0; i < thickness; i++) {
+    const stripeX = x + w + i * 2 - 1;
+    ctx.fillRect(stripeX, y + 4, 2, h - 8);
+  }
+  // Leather cover with a slight inner shadow.
+  drawRoundedRectPath(ctx, x, y, w, h, 4);
+  ctx.fillStyle = "#5b3f1a";
+  ctx.fill();
+  ctx.strokeStyle = "#1f120c";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  // Gold accent strip across spine.
+  ctx.fillStyle = palette.accent;
+  ctx.fillRect(x + 2, y + h * 0.3, 3, h * 0.4);
+  // Small "A" embossed corner mark.
+  ctx.fillStyle = palette.accent;
+  ctx.font = "bold 10px Georgia, serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("A", x + w / 2, y + h / 2 + 1);
+}
+
+function drawRoundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
 }
 
 function drawLed(ctx: CanvasRenderingContext2D, color: string, tMs: number) {
