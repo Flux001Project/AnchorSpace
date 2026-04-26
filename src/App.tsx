@@ -1,122 +1,90 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useEffect } from "react";
+import { useRoomStore } from "./store/roomStore";
 
-function App() {
-  const [count, setCount] = useState(0)
+/**
+ * Phase 1 smoke surface. The real lo-fi room renders in Phase 2; for now
+ * we expose enough state to confirm the proxy → client → parser pipeline
+ * is alive: socket status, proxy LED, event count, parsed run cards.
+ */
+export default function App() {
+  const start = useRoomStore((s) => s.start);
+  const stop = useRoomStore((s) => s.stop);
+  const socketStatus = useRoomStore((s) => s.socketStatus);
+  const proxy = useRoomStore((s) => s.proxy);
+  const runs = useRoomStore((s) => s.runs);
+  const eventCount = useRoomStore((s) => s.eventCount);
+
+  useEffect(() => {
+    start();
+    return () => stop();
+  }, [start, stop]);
+
+  const ledColor = proxy.connected
+    ? "bg-emerald-400 shadow-emerald-400/60"
+    : "bg-room-amber shadow-room-amber/60";
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+    <div className="min-h-screen p-8 max-w-6xl mx-auto">
+      <header className="flex items-center gap-4 mb-8">
+        <span
+          className={`inline-block w-3 h-3 rounded-full ${ledColor} shadow-[0_0_12px_currentColor]`}
+          title={proxy.connected ? "upstream gateway connected" : (proxy.lastReason ?? "disconnected")}
+        />
+        <h1 className="text-xl font-medium tracking-wide">AnchorSpace</h1>
+        <span className="text-xs opacity-50 ml-auto font-mono">
+          phase 1 · socket={socketStatus} · proxy={proxy.connected ? "up" : "down"} · events={eventCount}
+        </span>
+      </header>
+
+      {!proxy.connected && (
+        <div className="border border-room-amber/40 bg-room-amber/5 text-room-warm p-4 rounded mb-6 text-sm font-mono">
+          upstream gateway disconnected
+          {proxy.lastReason && <> · reason: {proxy.lastReason}</>}
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
+      )}
+
+      <section>
+        <h2 className="text-sm uppercase tracking-widest opacity-60 mb-3">
+          Active runs ({runs.size})
+        </h2>
+        {runs.size === 0 ? (
+          <p className="text-sm opacity-50 font-mono">
+            No agent runs observed yet. Trigger one with{" "}
+            <code className="bg-white/5 px-1.5 py-0.5 rounded">openclaw agent -m "list /tmp"</code>.
           </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
+        ) : (
+          <ul className="space-y-3">
+            {[...runs.values()].map((r) => (
+              <li
+                key={r.key}
+                className="border border-white/10 rounded p-4 bg-white/[0.02] font-mono text-sm"
+              >
+                <div className="flex justify-between items-baseline mb-2">
+                  <span className="opacity-60">{r.sessionKey}</span>
+                  <span className="text-room-warm uppercase text-xs tracking-wider">
+                    {r.activity}
+                    {r.endedAt ? " · done" : ""}
+                  </span>
+                </div>
+                {r.openTools.length > 0 && (
+                  <div className="opacity-70 mb-1 text-xs">
+                    tools: {r.openTools.map((t) => t.name).join(" · ")}
+                  </div>
+                )}
+                {r.lastOutput && (
+                  <pre className="text-xs opacity-50 truncate">› {r.lastOutput}</pre>
+                )}
+                {r.assistantText && (
+                  <div className="text-xs opacity-70 mt-2 line-clamp-3 whitespace-pre-wrap">
+                    {r.assistantText.slice(0, 240)}
+                    {r.assistantText.length > 240 ? "…" : ""}
+                  </div>
+                )}
+              </li>
+            ))}
           </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
+        )}
       </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+    </div>
+  );
 }
-
-export default App
