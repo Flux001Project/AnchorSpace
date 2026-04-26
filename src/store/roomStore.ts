@@ -12,6 +12,7 @@ import { create } from "zustand";
 import { GatewayClient } from "../lib/GatewayClient";
 import { AgentStateParser, type AgentRuns, type ProxyStatus } from "../lib/AgentStateParser";
 import type { GatewayEnvelope } from "../lib/types";
+import { installTestInjector } from "./testInjector";
 
 interface RoomState {
   // Connection state.
@@ -57,6 +58,12 @@ export const useRoomStore = create<RoomState>((set) => ({
       parser?.ingest(env);
     });
     client.connect();
+
+    // Test-only deterministic injector for the screenshot harness. Only
+    // installs when ?mock=1 is in the URL so production builds are clean.
+    if (typeof window !== "undefined") {
+      installTestInjector(parser);
+    }
   },
 
   stop() {
