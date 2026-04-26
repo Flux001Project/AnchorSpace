@@ -24,6 +24,12 @@ import {
   type LogEntry,
 } from "../log/activityLog";
 import { palette, subagentColor } from "../room/palette";
+import {
+  loadDayBook,
+  saveDayBook,
+  type DayBookStore,
+} from "../persistence/dayBook";
+import { RunAggregator } from "../persistence/runAggregator";
 
 interface RoomState {
   // Connection state.
@@ -56,6 +62,8 @@ let client: GatewayClient | null = null;
 let parser: AgentStateParser | null = null;
 let unsubParser: (() => void) | null = null;
 let unsubClient: (() => void) | null = null;
+let aggregator: RunAggregator | null = null;
+let dayBookStore: DayBookStore | null = null;
 
 let prevSnapshotRuns: Map<string, AgentRunState> | null = null;
 let subagentSpawnCounter = 0;
@@ -135,6 +143,8 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     subagentSpawnCounter = 0;
     fluxKey = null;
     nameRegistry.clear();
+    aggregator = new RunAggregator();
+    dayBookStore = loadDayBook();
 
     unsubParser = parser.on((snap) => {
       const runs = snap.runs;
@@ -143,6 +153,22 @@ export const useRoomStore = create<RoomState>((set, get) => ({
       for (const run of runs.values()) {
         if (!newNames.has(run.key)) {
           newNames.set(run.key, assignName(run));
+        }
+      }
+
+      // Fold the snapshot into the day book substrate. Phase 4.0: persistence
+      // only — no UI consumes this yet (4.1 panel comes next).
+      if (aggregator && dayBookStore) {
+        const nextDayBook = aggregator.apply(
+          dayBookStore,
+          snap,
+          Date.now(),
+          (sk) => sk,
+          (run) => newNames.get(run.key) ?? "unknown"
+        );
+        if (nextDayBook !== dayBookStore) {
+          dayBookStore = nextDayBook;
+          saveDayBook(nextDayBook);
         }
       }
 
@@ -205,6 +231,9 @@ export const useRoomStore = create<RoomState>((set, get) => ({
     unsubClient = null;
     unsubParser = null;
     prevSnapshotRuns = null;
+    aggregator?.reset();
+    aggregator = null;
+    dayBookStore = null;
     set({ socketStatus: "idle" });
   },
 }));

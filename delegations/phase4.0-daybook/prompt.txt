@@ -1,0 +1,299 @@
+You are a code-generation worker. Output ONLY two files in this exact format and nothing else (no prose, no markdown fences, no explanations):
+
+=== FILE: src/persistence/dayBook.ts ===
+<full file contents>
+=== FILE: src/persistence/__tests__/dayBook.test.ts ===
+<full file contents>
+=== END ===
+
+Each FILE marker must appear on its own line exactly as shown. The body between markers is the verbatim file contents — no leading/trailing whitespace beyond what the file should contain.
+
+If the spec is ambiguous, do not ask questions — produce the most literal possible implementation that satisfies the spec verbatim. Do not add features beyond the listed signatures. Do not add comments beyond a single one-line /** */ per public symbol.
+
+=== TASK SPEC ===
+# Delegation: Phase 4.0 — `dayBook.ts` substrate
+**Target model:** `qwen3-coder:30b` (alias: `code`)
+**Date:** 2026-04-26
+**Author:** Flux
+
+---
+
+## Task-shape verdict (run BEFORE prompt-quality screen)
+
+✅ **DELEGATE.** This is a greenfield module: a new file (`src/persistence/dayBook.ts`) plus its co-located test file. No existing code to localize within. Pure functions over a typed input. Success is verifiable by build + tests — exactly the shape the screen says yes to.
+
+---
+
+## Task
+
+Create a new file `src/persistence/dayBook.ts` that implements a localStorage-backed rolling-window store of `PersistedRun` records, plus a co-located test file `src/persistence/__tests__/dayBook.test.ts`.
+
+This is the run-history substrate for AnchorSpace's Phase 4 day book. **No other phase 4 code can be written until this exists.**
+
+## Exact file paths (both new)
+
+- `src/persistence/dayBook.ts`
+- `src/persistence/__tests__/dayBook.test.ts`
+
+## TypeScript signatures (full and final)
+
+```ts
+// src/persistence/dayBook.ts
+
+export interface PersistedRunEvent {
+  /** Epoch ms. */
+  t: number;
+  /** Tool name or activity tag. */
+  type: string;
+  /** Short human-readable summary. */
+  summary: string;
+}
+
+export interface PersistedRun {
+  /** Composite key: `${runId}::${sessionKey}`. Unique. */
+  key: string;
+  runId: string;
+  sessionKey: string;
+  /** Stable display name e.g. "Flux", "Sub-1". */
+  agentId: string;
+  /** Free-text session label (often the human-readable session name). */
+  sessionLabel: string;
+  /** Epoch ms. */
+  startedAt: number;
+  /** Epoch ms. null while live. */
+  endedAt: number | null;
+  /** Total tool calls observed during this run. */
+  toolCallCount: number;
+  /** Accumulated idle ms. */
+  idleMs: number;
+  /** Accumulated working ms. */
+  workingMs: number;
+  /** Last N events (capped per-run by RECENT_EVENTS_PER_RUN). */
+  recentEvents: PersistedRunEvent[];
+}
+
+export interface DayBookStore {
+  /** Sorted by startedAt DESC (newest first). */
+  runs: PersistedRun[];
+  version: number;
+}
+
+/** Schema version. Bump when PersistedRun shape changes. */
+export const DAYBOOK_VERSION: 1;
+
+/** Rolling-window cap. Oldest entries evict beyond this. */
+export const MAX_RUNS: 5000;
+
+/** Per-run cap on `recentEvents` array length. */
+export const RECENT_EVENTS_PER_RUN: 20;
+
+/** localStorage key. */
+export const DAYBOOK_STORAGE_KEY: "anchorspace.dayBook.v1";
+
+/** Read store from localStorage. Returns empty store on miss/parse error. */
+export function loadDayBook(): DayBookStore;
+
+/** Persist store to localStorage. Silently no-ops when window is undefined. */
+export function saveDayBook(store: DayBookStore): void;
+
+/**
+ * Insert or replace a run by `key`. Maintains startedAt-DESC sort.
+ * Enforces MAX_RUNS rolling window: if exceeded, evicts the oldest
+ * (smallest startedAt) entries until size ≤ MAX_RUNS.
+ * Returns a NEW store — does not mutate the input.
+ */
+export function upsertRun(store: DayBookStore, run: PersistedRun): DayBookStore;
+
+/**
+ * Append an event to a run's `recentEvents`. Caps length at RECENT_EVENTS_PER_RUN
+ * by dropping the OLDEST event (FIFO). If the run does not exist in the store,
+ * returns the store unchanged. Does NOT mutate the input — returns a new store.
+ */
+export function appendEvent(
+  store: DayBookStore,
+  key: string,
+  event: PersistedRunEvent
+): DayBookStore;
+
+/**
+ * Filter to runs whose startedAt falls within [dayStart, dayStart + 24h).
+ * `dayStart` should be a local-midnight epoch ms. Returns runs sorted
+ * startedAt-DESC.
+ */
+export function runsForDay(store: DayBookStore, dayStart: number): PersistedRun[];
+
+/**
+ * Compute today's local-midnight as epoch ms. Pure helper exposed for tests
+ * and for the panel to derive its filter window.
+ */
+export function localMidnight(now: number): number;
+
+/** Reset the store to empty. Used by tests and a future "clear day" affordance. */
+export function clearDayBook(): void;
+```
+
+## Surrounding-context conventions (lift verbatim into the new file)
+
+The repo's existing `src/log/activityLog.ts` is the closest analogue — a localStorage-backed rolling-window log. Match its style:
+
+```ts
+// from activityLog.ts (style reference, do not import from)
+const STORAGE_KEY = "anchorspace.activityLog.v1";
+const MAX_ENTRIES = 50;
+
+export function loadEntries(): LogEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isLogEntry);
+  } catch {
+    return [];
+  }
+}
+```
+
+Apply the same defensive shape to `loadDayBook`: SSR-safe (`typeof window === "undefined"` guard), try/catch around JSON.parse, structural validation before returning.
+
+The repo uses **2-space indent, double quotes, semicolons, ES2022 module syntax**. No default exports — all named exports.
+
+## Worked examples (5 cases — all must pass as test assertions)
+
+### Example 1 — empty load
+```ts
+clearDayBook();
+const s = loadDayBook();
+// expect:
+s.runs;            // []
+s.version;         // 1
+```
+
+### Example 2 — round-trip
+```ts
+clearDayBook();
+const r: PersistedRun = {
+  key: "r1::s1", runId: "r1", sessionKey: "s1", agentId: "Flux",
+  sessionLabel: "main", startedAt: 1000, endedAt: null,
+  toolCallCount: 0, idleMs: 0, workingMs: 0, recentEvents: [],
+};
+saveDayBook({ runs: [r], version: 1 });
+const reloaded = loadDayBook();
+// expect:
+reloaded.runs.length;       // 1
+reloaded.runs[0].key;       // "r1::s1"
+reloaded.runs[0].agentId;   // "Flux"
+```
+
+### Example 3 — upsert maintains DESC order and replaces by key
+```ts
+const empty: DayBookStore = { runs: [], version: 1 };
+const a: PersistedRun = { key: "a", runId: "a", sessionKey: "s", agentId: "Flux", sessionLabel: "m", startedAt: 100, endedAt: null, toolCallCount: 0, idleMs: 0, workingMs: 0, recentEvents: [] };
+const b: PersistedRun = { ...a, key: "b", runId: "b", startedAt: 200 };
+const c: PersistedRun = { ...a, key: "c", runId: "c", startedAt: 150 };
+const aUpdated: PersistedRun = { ...a, toolCallCount: 7 };
+
+const s1 = upsertRun(empty, a);
+const s2 = upsertRun(s1, b);
+const s3 = upsertRun(s2, c);
+const s4 = upsertRun(s3, aUpdated);
+
+// expect (DESC by startedAt):
+s4.runs.map(r => r.key);                          // ["b", "c", "a"]
+s4.runs.find(r => r.key === "a")!.toolCallCount;  // 7
+s4.runs.length;                                    // 3 (no duplicate "a")
+```
+
+### Example 4 — rolling-window eviction at MAX_RUNS
+```ts
+let store: DayBookStore = { runs: [], version: 1 };
+for (let i = 0; i < 5005; i++) {
+  store = upsertRun(store, {
+    key: `k${i}`, runId: `k${i}`, sessionKey: "s", agentId: "Flux",
+    sessionLabel: "m", startedAt: i, endedAt: null,
+    toolCallCount: 0, idleMs: 0, workingMs: 0, recentEvents: [],
+  });
+}
+// expect:
+store.runs.length;                          // 5000 (MAX_RUNS)
+store.runs[0].key;                          // "k5004" (newest, head of DESC list)
+store.runs[store.runs.length - 1].key;      // "k5" (oldest five evicted: k0..k4)
+```
+
+### Example 5 — appendEvent caps recentEvents and is FIFO
+```ts
+const r: PersistedRun = {
+  key: "r", runId: "r", sessionKey: "s", agentId: "Flux", sessionLabel: "m",
+  startedAt: 0, endedAt: null, toolCallCount: 0, idleMs: 0, workingMs: 0,
+  recentEvents: [],
+};
+let store: DayBookStore = upsertRun({ runs: [], version: 1 }, r);
+for (let i = 0; i < 25; i++) {
+  store = appendEvent(store, "r", { t: i, type: "exec", summary: `e${i}` });
+}
+const got = store.runs.find(x => x.key === "r")!;
+// expect (RECENT_EVENTS_PER_RUN = 20, oldest dropped):
+got.recentEvents.length;             // 20
+got.recentEvents[0].summary;         // "e5"
+got.recentEvents[19].summary;        // "e24"
+
+// appendEvent on missing key returns store unchanged:
+const sameStore = appendEvent(store, "does-not-exist", { t: 0, type: "x", summary: "x" });
+sameStore;                            // === store (referentially or structurally equal)
+```
+
+## `localMidnight` and `runsForDay` semantics
+
+```ts
+// localMidnight floors `now` (epoch ms) to local-tz midnight of that same day:
+localMidnight(new Date("2026-04-26T15:30:00-05:00").getTime());
+// → epoch ms for 2026-04-26 00:00:00 in the local timezone
+
+// runsForDay returns runs whose startedAt is in [dayStart, dayStart + 24h):
+const today = localMidnight(Date.now());
+runsForDay(store, today);  // today's runs, DESC
+```
+
+Implement `localMidnight` using `new Date(now)` and `setHours(0,0,0,0)` to respect local tz.
+
+## Negative constraints
+
+- Do NOT import from `src/log/activityLog.ts` (style reference only — keep stores independent per Joey's brief).
+- Do NOT add a `dismissed`, `acknowledged`, `priority`, `flagged`, or any other action-shaped field to `PersistedRun`. Principle 1: this substrate is a record of what happened, not a to-do queue.
+- Do NOT add `console.log` / `console.warn` / `console.error`.
+- Do NOT add JSDoc beyond what is shown above (one-line `/** */` per public symbol; signatures speak for themselves).
+- Do NOT add new dependencies — use only `localStorage` and built-in JS.
+- Do NOT use `any`. Use `unknown` + narrowing if you need to validate parsed JSON.
+- Do NOT add a default export. Named exports only.
+- Do NOT mutate input arguments anywhere — `upsertRun` and `appendEvent` return new stores.
+- Do NOT add helper exports beyond the signatures listed above. Internal helpers may exist but must not be exported.
+- Tests: use `vitest` (already installed). `import { describe, it, expect, beforeEach } from "vitest"`. Use `globalThis.localStorage` if available; for SSR-style tests, the file's `typeof window === "undefined"` guards already handle absence. In vitest's default `node` environment `localStorage` is undefined — call `clearDayBook()` and the load/save pair gracefully no-op. **For round-trip examples (2, 4, 5) you MUST stub localStorage.** Use this stub at the top of the test file:
+  ```ts
+  beforeEach(() => {
+    const mem = new Map<string, string>();
+    (globalThis as any).window = {
+      localStorage: {
+        getItem: (k: string) => mem.get(k) ?? null,
+        setItem: (k: string, v: string) => { mem.set(k, v); },
+        removeItem: (k: string) => { mem.delete(k); },
+      },
+    };
+  });
+  ```
+
+## Build-success definition
+
+All three must exit 0 from `/Users/invokeautomation/.openclaw/workspace/anchorspace`:
+
+```
+npx tsc --noEmit
+npm run build
+npm test
+```
+
+The diff vs `23b1d92` must contain ONLY the two new files (`dayBook.ts`, `dayBook.test.ts`). No other files modified. No new dependencies in `package.json`.
+
+=== END SPEC ===
+
+Now output the two files in the exact format specified above.

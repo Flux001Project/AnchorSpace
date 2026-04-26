@@ -1,0 +1,316 @@
+=== FILE: src/persistence/dayBook.ts ===
+```typescript
+export interface PersistedRunEvent {
+  /** Epoch ms. */
+  t: number;
+  /** Tool name or activity tag. */
+  type: string;
+  /** Short human-readable summary. */
+  summary: string;
+}
+
+export interface PersistedRun {
+  /** Composite key: `${runId}::${sessionKey}`. Unique. */
+  key: string;
+  runId: string;
+  sessionKey: string;
+  /** Stable display name e.g. "Flux", "Sub-1". */
+  agentId: string;
+  /** Free-text session label (often the human-readable session name). */
+  sessionLabel: string;
+  /** Epoch ms. */
+  startedAt: number;
+  /** Epoch ms. null while live. */
+  endedAt: number | null;
+  /** Total tool calls observed during this run. */
+  toolCallCount: number;
+  /** Accumulated idle ms. */
+  idleMs: number;
+  /** Accumulated working ms. */
+  workingMs: number;
+  /** Last N events (capped per-run by RECENT_EVENTS_PER_RUN). */
+  recentEvents: PersistedRunEvent[];
+}
+
+export interface DayBookStore {
+  /** Sorted by startedAt DESC (newest first). */
+  runs: PersistedRun[];
+  version: number;
+}
+
+/** Schema version. Bump when PersistedRun shape changes. */
+export const DAYBOOK_VERSION: 1 = 1;
+
+/** Rolling-window cap. Oldest entries evict beyond this. */
+export const MAX_RUNS: 5000 = 5000;
+
+/** Per-run cap on `recentEvents` array length. */
+export const RECENT_EVENTS_PER_RUN: 20 = 20;
+
+/** localStorage key. */
+export const DAYBOOK_STORAGE_KEY: "anchorspace.dayBook.v1" = "anchorspace.d[14D[K
+"anchorspace.dayBook.v1";
+
+/** Read store from localStorage. Returns empty store on miss/parse error. [K
+*/
+export function loadDayBook(): DayBookStore {
+  if (typeof window === "undefined") return { runs: [], version: DAYBOOK_VE[10D[K
+DAYBOOK_VERSION };
+  try {
+    const raw = window.localStorage.getItem(DAYBOOK_STORAGE_KEY);
+    if (!raw) return { runs: [], version: DAYBOOK_VERSION };
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed.runs)) return { runs: [], version: DAYBOOK_VE[10D[K
+DAYBOOK_VERSION };
+    return {
+      runs: parsed.runs,
+      version: parsed.version ?? DAYBOOK_VERSION,
+    };
+  } catch {
+    return { runs: [], version: DAYBOOK_VERSION };
+  }
+}
+
+/** Persist store to localStorage. Silently no-ops when window is undefined[9D[K
+undefined. */
+export function saveDayBook(store: DayBookStore): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(DAYBOOK_STORAGE_KEY, JSON.stringify(store))[22D[K
+JSON.stringify(store));
+  } catch {
+    // Silently ignore errors
+  }
+}
+
+/**
+ * Insert or replace a run by `key`. Maintains startedAt-DESC sort.
+ * Enforces MAX_RUNS rolling window: if exceeded, evicts the oldest
+ * (smallest startedAt) entries until size ≤ MAX_RUNS.
+ * Returns a NEW store — does not mutate the input.
+ */
+export function upsertRun(store: DayBookStore, run: PersistedRun): DayBookS[8D[K
+DayBookStore {
+  const newRuns = [...store.runs];
+  const existingIndex = newRuns.findIndex(r => r.key === run.key);
+  if (existingIndex !== -1) {
+    newRuns[existingIndex] = run;
+  } else {
+    newRuns.push(run);
+  }
+
+  // Sort DESC by startedAt
+  newRuns.sort((a, b) => b.startedAt - a.startedAt);
+
+  // Trim to MAX_RUNS
+  if (newRuns.length > MAX_RUNS) {
+    newRuns.splice(MAX_RUNS);
+  }
+
+  return { runs: newRuns, version: store.version };
+}
+
+/**
+ * Append an event to a run's `recentEvents`. Caps length at RECENT_EVENTS_[14D[K
+RECENT_EVENTS_PER_RUN
+ * by dropping the OLDEST event (FIFO). If the run does not exist in the st[2D[K
+store,
+ * returns the store unchanged. Does NOT mutate the input — returns a new s[1D[K
+store.
+ */
+export function appendEvent(
+  store: DayBookStore,
+  key: string,
+  event: PersistedRunEvent
+): DayBookStore {
+  const newRuns = [...store.runs];
+  const runIndex = newRuns.findIndex(r => r.key === key);
+  if (runIndex === -1) return store;
+
+  const run = { ...newRuns[runIndex] };
+  run.recentEvents = [...run.recentEvents, event];
+  if (run.recentEvents.length > RECENT_EVENTS_PER_RUN) {
+    run.recentEvents = run.recentEvents.slice(-RECENT_EVENTS_PER_RUN);
+  }
+
+  newRuns[runIndex] = run;
+  return { runs: newRuns, version: store.version };
+}
+
+/**
+ * Filter to runs whose startedAt falls within [dayStart, dayStart + 24h).
+ * `dayStart` should be a local-midnight epoch ms. Returns runs sorted
+ * startedAt-DESC.
+ */
+export function runsForDay(store: DayBookStore, dayStart: number): Persiste[8D[K
+PersistedRun[] {
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+  return store.runs.filter(r => r.startedAt >= dayStart && r.startedAt < da[2D[K
+dayEnd)
+    .sort((a, b) => b.startedAt - a.startedAt);
+}
+
+/**
+ * Compute today's local-midnight as epoch ms. Pure helper exposed for test[4D[K
+tests
+ * and for the panel to derive its filter window.
+ */
+export function localMidnight(now: number): number {
+  const date = new Date(now);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+/** Reset the store to empty. Used by tests and a future "clear day" afford[6D[K
+affordance. */
+export function clearDayBook(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(DAYBOOK_STORAGE_KEY);
+  } catch {
+    // Silently ignore errors
+  }
+}
+```
+=== FILE: src/persistence/__tests__/dayBook.test.ts ===
+```typescript
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  loadDayBook,
+  saveDayBook,
+  upsertRun,
+  appendEvent,
+  runsForDay,
+  localMidnight,
+  clearDayBook,
+  MAX_RUNS,
+  RECENT_EVENTS_PER_RUN,
+  DAYBOOK_VERSION,
+  DayBookStore,
+  PersistedRun,
+} from "../dayBook";
+
+beforeEach(() => {
+  const mem = new Map<string, string>();
+  (globalThis as any).window = {
+    localStorage: {
+      getItem: (k: string) => mem.get(k) ?? null,
+      setItem: (k: string, v: string) => { mem.set(k, v); },
+      removeItem: (k: string) => { mem.delete(k); },
+    },
+  };
+  clearDayBook();
+});
+
+describe("dayBook", () => {
+  it("loadDayBook returns empty store on miss", () => {
+    const s = loadDayBook();
+    expect(s.runs).toEqual([]);
+    expect(s.version).toBe(DAYBOOK_VERSION);
+  });
+
+  it("round-trip save/load", () => {
+    const r: PersistedRun = {
+      key: "r1::s1", runId: "r1", sessionKey: "s1", agentId: "Flux",
+      sessionLabel: "main", startedAt: 1000, endedAt: null,
+      toolCallCount: 0, idleMs: 0, workingMs: 0, recentEvents: [],
+    };
+    saveDayBook({ runs: [r], version: 1 });
+    const reloaded = loadDayBook();
+    expect(reloaded.runs.length).toBe(1);
+    expect(reloaded.runs[0].key).toBe("r1::s1");
+    expect(reloaded.runs[0].agentId).toBe("Flux");
+  });
+
+  it("upsertRun maintains DESC order and replaces by key", () => {
+    const empty: DayBookStore = { runs: [], version: 1 };
+    const a: PersistedRun = { key: "a", runId: "a", sessionKey: "s", agentI[6D[K
+agentId: "Flux", sessionLabel: "m", startedAt: 100, endedAt: null, toolCall[8D[K
+toolCallCount: 0, idleMs: 0, workingMs: 0, recentEvents: [] };
+    const b: PersistedRun = { ...a, key: "b", runId: "b", startedAt: 200 };[2D[K
+};
+    const c: PersistedRun = { ...a, key: "c", runId: "c", startedAt: 150 [K
+};
+    const aUpdated: PersistedRun = { ...a, toolCallCount: 7 };
+
+    const s1 = upsertRun(empty, a);
+    const s2 = upsertRun(s1, b);
+    const s3 = upsertRun(s2, c);
+    const s4 = upsertRun(s3, aUpdated);
+
+    expect(s4.runs.map(r => r.key)).toEqual(["b", "c", "a"]);
+    expect(s4.runs.find(r => r.key === "a")!.toolCallCount).toBe(7);
+    expect(s4.runs.length).toBe(3);
+  });
+
+  it("rolling-window eviction at MAX_RUNS", () => {
+    let store: DayBookStore = { runs: [], version: 1 };
+    for (let i = 0; i < 5005; i++) {
+      store = upsertRun(store, {
+        key: `k${i}`, runId: `k${i}`, sessionKey: "s", agentId: "Flux",
+        sessionLabel: "m", startedAt: i, endedAt: null,
+        toolCallCount: 0, idleMs: 0, workingMs: 0, recentEvents: [],
+      });
+    }
+    expect(store.runs.length).toBe(MAX_RUNS);
+    expect(store.runs[0].key).toBe("k5004");
+    expect(store.runs[store.runs.length - 1].key).toBe("k5");
+  });
+
+  it("appendEvent caps recentEvents and is FIFO", () => {
+    const r: PersistedRun = {
+      key: "r", runId: "r", sessionKey: "s", agentId: "Flux", sessionLabel:[13D[K
+sessionLabel: "m",
+      startedAt: 0, endedAt: null, toolCallCount: 0, idleMs: 0, workingMs: [K
+0,
+      recentEvents: [],
+    };
+    let store: DayBookStore = upsertRun({ runs: [], version: 1 }, r);
+    for (let i = 0; i < 25; i++) {
+      store = appendEvent(store, "r", { t: i, type: "exec", summary: `e${i}[6D[K
+`e${i}` });
+    }
+    const got = store.runs.find(x => x.key === "r")!;
+    expect(got.recentEvents.length).toBe(RECENT_EVENTS_PER_RUN);
+    expect(got.recentEvents[0].summary).toBe("e5");
+    expect(got.recentEvents[19].summary).toBe("e24");
+
+    const sameStore = appendEvent(store, "does-not-exist", { t: 0, type: "x[2D[K
+"x", summary: "x" });
+    expect(sameStore).toBe(store);
+  });
+
+  it("localMidnight floors to local midnight", () => {
+    const now = new Date("2026-04-26T15:30:00-05:00").getTime();
+    const midnight = localMidnight(now);
+    const expected = new Date("2026-04-26T00:00:00-05:00").getTime();
+    expect(midnight).toBe(expected);
+  });
+
+  it("runsForDay filters by day", () => {
+    const now = new Date("2026-04-26T15:30:00-05:00").getTime();
+    const today = localMidnight(now);
+    const r1: PersistedRun = {
+      key: "r1", runId: "r1", sessionKey: "s", agentId: "Flux", sessionLabe[11D[K
+sessionLabel: "m",
+      startedAt: today + 1000, endedAt: null, toolCallCount: 0, idleMs: 0, [K
+workingMs: 0,
+      recentEvents: [],
+    };
+    const r2: PersistedRun = {
+      key: "r2", runId: "r2", sessionKey: "s", agentId: "Flux", sessionLabe[11D[K
+sessionLabel: "m",
+      startedAt: today + 24 * 60 * 60 * 1000 - 1000, endedAt: null, toolCal[7D[K
+toolCallCount: 0, idleMs: 0, workingMs: 0,
+      recentEvents: [],
+    };
+    const store = upsertRun({ runs: [], version: 1 }, r1);
+    const store2 = upsertRun(store, r2);
+    const dayRuns = runsForDay(store2, today);
+    expect(dayRuns.length).toBe(2);
+    expect(dayRuns[0].key).toBe("r2");
+    expect(dayRuns[1].key).toBe("r1");
+  });
+});
+```
+
