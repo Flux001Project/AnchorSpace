@@ -6,6 +6,7 @@
  */
 
 import type { PersistedRun } from "../persistence/dayBook";
+import { LOCAL_TZ, startOfLocalDay } from "../lib/time";
 
 export interface DayAggregates {
   /** How many runs started today. */
@@ -29,16 +30,16 @@ export interface DayAggregates {
 
 /**
  * Filter runs whose `startedAt` falls on the local calendar day containing `now`,
- * evaluated in `tz` (IANA timezone). Non-mutating.
+ * evaluated in `tz` (IANA timezone; defaults to the app's canonical `LOCAL_TZ`,
+ * `America/Chicago`). Non-mutating.
  *
- * Uses Intl.DateTimeFormat to derive the local Y/M/D of `now` in `tz`, then
- * computes the epoch ms of that day's local midnight. Runs with
- * `startedAt >= localMidnight` are kept.
+ * Delegates to the shared `startOfLocalDay` helper so day boundaries are
+ * consistent across the codebase and independent of the host process tz.
  */
 export function filterToday(
   runs: readonly PersistedRun[],
   now: number,
-  tz: string
+  tz: string = LOCAL_TZ
 ): PersistedRun[] {
   const startOfDay = startOfLocalDay(now, tz);
   return runs.filter((r) => r.startedAt >= startOfDay);
@@ -91,59 +92,4 @@ export function aggregateDay(runs: readonly PersistedRun[], now: number): DayAgg
   };
 }
 
-// --- helpers ----------------------------------------------------------------
 
-/**
- * Epoch ms of local midnight for the calendar day containing `now`, in `tz`.
- *
- * Implementation: format `now` in `tz` to get its Y-M-D, then locate the
- * epoch ms whose formatted-in-`tz` timestamp is exactly `${Y}-${M}-${D} 00:00:00`.
- * A single-pass correction handles DST offset changes.
- */
-function startOfLocalDay(now: number, tz: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date(now));
-
-  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? "0");
-  const y = get("year");
-  const m = get("month");
-  const d = get("day");
-
-  // First estimate: interpret the local Y-M-D 00:00 as if it were UTC.
-  const utcMidnight = Date.UTC(y, m - 1, d, 0, 0, 0);
-  // Then measure the tz offset at that instant and correct.
-  const offsetMs = tzOffsetMs(utcMidnight, tz);
-  return utcMidnight - offsetMs;
-}
-
-/** Offset in ms such that: local-time-in-tz = utc + offsetMs. Positive for east-of-UTC. */
-function tzOffsetMs(instant: number, tz: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date(instant));
-  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? "0");
-  const asUtc = Date.UTC(
-    get("year"),
-    get("month") - 1,
-    get("day"),
-    get("hour") % 24,
-    get("minute"),
-    get("second")
-  );
-  return asUtc - instant;
-}

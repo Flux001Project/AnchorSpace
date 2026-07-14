@@ -109,12 +109,15 @@ describe("dayBook", () => {
     expect(sameStore).toBe(store);
   });
 
-  it("localMidnight floors to local midnight", () => {
-    // Use a local-tz-relative anchor so the test passes regardless of CI tz.
-    const d = new Date(2026, 3, 26, 15, 30, 0, 0); // local Apr 26 15:30
-    const midnight = localMidnight(d.getTime());
-    const expected = new Date(2026, 3, 26, 0, 0, 0, 0).getTime();
-    expect(midnight).toBe(expected);
+  it("localMidnight floors to Chicago-local midnight regardless of process tz", () => {
+    // 2026-04-26 20:30 UTC = 2026-04-26 15:30 CDT. The Chicago-local day is
+    // 2026-04-26, whose local midnight is 2026-04-26 00:00 CDT = 05:00 UTC.
+    // This assertion must hold whether the process runs under TZ=UTC or
+    // TZ=America/Chicago — that is the whole point of the migration to the
+    // canonical `startOfLocalDay` helper.
+    const noonCT = new Date("2026-04-26T20:30:00Z").getTime();
+    const expected = new Date("2026-04-26T05:00:00Z").getTime();
+    expect(localMidnight(noonCT)).toBe(expected);
   });
 
   it("v1→v2 migration sweeps phantom runs from a pre-4.0.1 store", () => {
@@ -176,7 +179,7 @@ describe("dayBook", () => {
   });
 
   it("runsForDay filters to [dayStart, dayStart + 24h)", () => {
-    const today = localMidnight(new Date(2026, 3, 26, 15, 30).getTime());
+    const today = localMidnight(new Date("2026-04-26T20:30:00Z").getTime());
     const inDayEarly = today + 1000;
     const inDayLate = today + 24 * 60 * 60 * 1000 - 1000;
     const beforeDay = today - 1000;

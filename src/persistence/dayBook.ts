@@ -9,6 +9,8 @@
  * here. The day book is observational only.
  */
 
+import { LOCAL_TZ, startOfLocalDay } from "../lib/time";
+
 export interface PersistedRunEvent {
   /** Epoch ms. */
   t: number;
@@ -186,11 +188,15 @@ export function runsForDay(store: DayBookStore, dayStart: number): PersistedRun[
     .sort((a, b) => b.startedAt - a.startedAt);
 }
 
-/** Floor `now` (epoch ms) to local-tz midnight of that same day. */
+/**
+ * Floor `now` (epoch ms) to local-tz midnight of that same day, in the app's
+ * canonical timezone (`America/Chicago`). Delegates to the shared helper so
+ * day-boundary math stays consistent across the codebase and independent of
+ * the host process tz (a UTC CI runner and Joey's Chicago Mac return the
+ * same instant for the same `now`).
+ */
 export function localMidnight(now: number): number {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  return startOfLocalDay(now, LOCAL_TZ);
 }
 
 /** Reset the store to empty. */

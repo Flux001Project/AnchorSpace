@@ -61,6 +61,13 @@ describe("filterToday", () => {
   it("returns [] for an empty input", () => {
     expect(filterToday([], NOON_LOCAL, "America/Chicago")).toEqual([]);
   });
+
+  it("defaults tz to America/Chicago when omitted", () => {
+    const yesterday = mkRun({ startedAt: YESTERDAY_LATE });
+    const noonToday = mkRun({ startedAt: NOON_LOCAL });
+    const out = filterToday([yesterday, noonToday], NOON_LOCAL);
+    expect(out.map((r) => r.startedAt)).toEqual([NOON_LOCAL]);
+  });
 });
 
 // --- aggregateDay -----------------------------------------------------------
